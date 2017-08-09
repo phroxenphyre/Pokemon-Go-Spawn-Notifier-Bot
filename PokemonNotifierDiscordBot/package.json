@@ -1,0 +1,11 @@
+{
+  "name": "pokemon-spawn-notifier",
+  "version": "0.0.1",
+  "description": "Notifies interested parties whenever a rare pokemon spawns",
+  "main": "bot.js",
+  "author": "Andrew Leppke",
+  "dependencies": {
+    "discord.io": "^2.5.1",
+    "winston": "^2.3.1"
+  }
+}
