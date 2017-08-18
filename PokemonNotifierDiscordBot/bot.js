@@ -24,7 +24,7 @@ const bot = new Discord.Client({
 // Initialize the database
 initializeDB();
 
-const supportedCommands = { 'ping': pong, 'sub': sub, 'spawn': spawn, 'help': help };
+const supportedCommands = { 'ping': pong, 'sub': sub, 'spawn': spawn, 'help': help, 'stats': stats };
 
 bot.on('ready', function (evt) {
     logger.info('Connected');
@@ -34,9 +34,10 @@ bot.on('ready', function (evt) {
 bot.on('message', function (user, userID, channelID, message, evt) {
     // Our bot needs to know if it will execute a command
     // It will listen for messages that will start with `!`
-    if (message.substring(0, COMMAND_PREFIX.length) === COMMAND_PREFIX) {
-        logger.info('Command detected: ' + message);
-        var args = message.toLowerCase().substring(COMMAND_PREFIX.length).split(' ');
+    var msg = message.toLowerCase();
+    if (msg.substring(0, COMMAND_PREFIX.length) === COMMAND_PREFIX) {
+        logger.info('Command detected: "' + message + '". Interpreted as "' + msg + '"');
+        var args = msg.substring(COMMAND_PREFIX.length).split(' ');
         var cmd = args[0];
 
         args = args.splice(1);
@@ -144,6 +145,26 @@ function spawn(user, userID, channelID, args, evt) {
         else {
             bot.sendMessage({ to: userID, message: 'Subscriptions are connected to a server, which cannot be determined from a PM. Please run this command from a server channel.' });
         }
+    }
+}
+
+
+function stats(user, userID, channelID, args, evt) {
+    var guildId = getGuildIdForChannel(channelID);
+    if (guildId) {
+        showStatsForGuild(userID, guildId);
+    }
+}
+
+function showStatsForGuild(userId, guildId) {
+    if (userId && guildId) {
+        sql.all('SELECT guildId, COUNT(DISTINCT userId) AS trainers, COUNT(DISTINCT pokemon) AS pokemon, COUNT(*) AS totalSubs FROM subcription GROUP BY guildId HAVING guildId=?', [guildId]).then((stats) => {
+            var message = `On this server, ${stats[0].trainers} trainers are subscribed to ${stats[0].pokemon} different pokemon for a total of ${stats[0].totalSubs} subscriptions.`;
+            bot.sendMessage({ to: userId, message: message });
+        }).catch((err) => {
+            bot.sendMessage({ to: userId, message: "Failed to get stats: " + err });
+            logger.error(err);
+        });
     }
 }
 
