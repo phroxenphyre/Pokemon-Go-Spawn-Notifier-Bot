@@ -1,9 +1,12 @@
 ﻿const Discord = require('discord.io');
 const logger = require('winston');
 const auth = require('./auth.json');
+//const auth = require('./auth-test.json');
 const sql = require('sqlite');
 
 const dbFile = './subs.sqlite';
+
+const COMMAND_PREFIX = 'p!';
 
 // Configure logger settings
 logger.remove(logger.transports.Console);
@@ -21,7 +24,7 @@ const bot = new Discord.Client({
 // Initialize the database
 initializeDB();
 
-const supportedCommands = { 'ping': pong, 'sub': sub, 'db': db, 'spawn': spawn, 'help': help };
+const supportedCommands = { 'ping': pong, 'sub': sub, 'spawn': spawn, 'help': help };
 
 bot.on('ready', function (evt) {
     logger.info('Connected');
@@ -31,15 +34,20 @@ bot.on('ready', function (evt) {
 bot.on('message', function (user, userID, channelID, message, evt) {
     // Our bot needs to know if it will execute a command
     // It will listen for messages that will start with `!`
-    if (message.substring(0, 1) == '!') {
+    if (message.substring(0, COMMAND_PREFIX.length) === COMMAND_PREFIX) {
         logger.info('Command detected: ' + message);
-        var args = message.substring(1).split(' ');
+        var args = message.toLowerCase().substring(COMMAND_PREFIX.length).split(' ');
         var cmd = args[0];
 
         args = args.splice(1);
         f = supportedCommands[cmd];
         if (f) {
-            f(user, userID, channelID, args, evt);
+            try {
+                f(user, userID, channelID, args, evt);
+            }
+            catch (err) {
+                logger.error(`Error executing command '${message}': ${err}`);
+            }
         }
         else {
             bot.sendMessage({to: channelID, message: 'Unknown command: ' + cmd + '. Use !help to see available commands.'});
@@ -47,21 +55,37 @@ bot.on('message', function (user, userID, channelID, message, evt) {
     }
 });
 
+function getGuildIdForChannel(channelId) {
+    if (bot && channelId) {
+        try {
+            var channel = bot.channels[channelId];
+            if (channel) {
+                return channel.guild_id;
+            }
+        }
+        catch (err) {
+            logger.warn(err);
+        }
+    }
+    return 0;
+}
+
+/** 
+The help command handler.
+*/
 function help(user, userID, channelID, args, evt) {
     message = 'Available commands:' +
-        '\r\n!ping\r\n\tChecks to see if the bot is running' +
-        '\r\n\r\n!sub <flag>\r\n\tPerform a subscription action. Requires one of the following flags:' +
-        '\r\n\t\tadd <pokemon>: Add a subscription for the specified <pokemon>. You will receive a confirmation DM.' +
-        '\r\n\t\tremove <pokemon>: Removes a subscription for the specified <pokemon>. You will receive a confirmation DM.' +
-        '\r\n\t\tlist: Sends a DM with a list of all pokemon you are subscribed to.' +
-        '\r\n\r\n!spawn <pokemon>\r\n\tSends a DM to all people subscribed to the specified <pokemon> indicating that one has spawned. If sent as a comment on an image, the uploaded image will also be included in the DM.'
+        '\r\n`p!ping`: Checks to see if the bot is running' +
+        '\r\n`p!sub add <pokemon>`: Add a subscription for the specified <pokemon>. You will receive a confirmation DM.' +
+        '\r\n`p!sub remove <pokemon>`: Removes a subscription for the specified <pokemon>. You will receive a confirmation DM.' +
+        '\r\n`p!sub list`: Sends a DM with a list of all pokemon you are subscribed to.' +
+        '\r\n`p!spawn <pokemon>`: Sends a DM to all people subscribed to the specified <pokemon> indicating that one has spawned. If sent as a comment on an image, the uploaded image will also be included in the DM.'
     bot.sendMessage({ to: channelID, message: message });
 }
 
-function db(user, userID, channelID, args, evt) {
-    initializeDB();
-}
-
+/** 
+The ping command handler.
+*/
 function pong(user, userID, channelID, args, evt) {
     bot.sendMessage({
         to: channelID,
@@ -69,24 +93,32 @@ function pong(user, userID, channelID, args, evt) {
     });
 };
 
+/** 
+The sub command handler.
+*/
 function sub(user, userID, channelID, args, evt) {
     if (args) {
         flag = args[0];
-        if ((flag === 'add' || flag === 'remove') && args.length >= 2) {
-            pokemon = args[1];
-            if (flag === 'add') {
-                addSub(userID, pokemon);
+        var guildId = getGuildIdForChannel(channelID);
+        if (guildId) {
+            if ((flag === 'add' || flag === 'remove') && args.length >= 2) {
+                pokemon = args[1];
+                if (flag === 'add') {
+                    addSub(userID, guildId, pokemon);
+                }
+                else if (flag === 'remove') {
+                    removeSub(userID, guildId, pokemon);
+                }
             }
-            else if (flag === 'remove') {
-                removeSub(userID, pokemon);
+            else if (flag === 'list' && args.length >= 1) {
+                listSubs(userID, guildId);
+            }
+            else {
+                bot.sendMessage({ to: channelID, message: 'Invalid usage' });
             }
         }
-        else if (flag === 'list' && args.length >= 1) {
-            listSubs(userID);
-        }
-        else
-        {
-            bot.sendMessage({ to: channelID, message: 'Invalid usage' });
+        else {
+            bot.sendMessage({ to: userID, message: 'Your subscriptions are connected to your server, which cannot be determined from a PM. Please run this command from a server channel.' });
         }
     }
     else {
@@ -94,21 +126,33 @@ function sub(user, userID, channelID, args, evt) {
     }
 };
 
+/** 
+The spawn command handler. 
+*/
 function spawn(user, userID, channelID, args, evt) {
     if (args) {
         pokemon = args[0];
         var imageUrl = null;
-        if (evt.d.attachments) {
-            imageUrl = evt.d.attachments[0].proxy_url;
+        var guildId = getGuildIdForChannel(channelID);
+        if (guildId) {
+            if (evt.d.attachments && evt.d.attachments.length > 0) {
+                imageUrl = evt.d.attachments[0].proxy_url;
+            }
+            sleep(5000).then(() => { notifySubs(pokemon, guildId, imageUrl); });
+            bot.sendMessage({ to: channelID, message: 'Sent out alerts for ' + pokemon.toUpperCase() });
         }
-        sleep(5000).then(() => { notifySubs(pokemon, imageUrl); });
-        bot.sendMessage({ to: channelID, message: 'Sent out alerts for ' + pokemon });
+        else {
+            bot.sendMessage({ to: userID, message: 'Subscriptions are connected to a server, which cannot be determined from a PM. Please run this command from a server channel.' });
+        }
     }
 }
 
-function addSub(userID, pokemon) {
+/** 
+Subscribes the specified user to the specified pokemon.
+*/
+function addSub(userID, guildId, pokemon) {
     if (userID && pokemon) {
-        sql.run('INSERT INTO subcription (userId, pokemon) VALUES (?, ?)', [userID, pokemon.toUpperCase()]).then(() => {
+        sql.run('INSERT INTO subcription (userId, guildId, pokemon) VALUES (?, ?, ?)', [userID, guildId, pokemon.toUpperCase()]).then(() => {
             logger.info(userID + ' is now subscribed to ' + pokemon);
             bot.sendMessage({ to: userID, message: 'You are now subscribed to ' + pokemon });
         }).catch((err) => {
@@ -122,9 +166,12 @@ function addSub(userID, pokemon) {
     }
 }
 
-function removeSub(userID, pokemon) {
-    if (userID && pokemon) {
-        sql.run('DELETE FROM subcription WHERE userId=? AND pokemon=?', [userID, pokemon.toUpperCase()]).then(() => {
+/** 
+Unsubscribes the specified user from the specified pokemon.
+*/
+function removeSub(userID, guildId, pokemon) {
+    if (userID && guildId && pokemon) {
+        sql.run('DELETE FROM subcription WHERE userId=? AND guildId=? AND pokemon=?', [userID, guildId, pokemon.toUpperCase()]).then(() => {
             logger.info(userID + ' is no longer subscribed to ' + pokemon);
             bot.sendMessage({ to: userID, message: 'You are no longer subscribed to ' + pokemon });
         }).catch((err) => {
@@ -138,9 +185,12 @@ function removeSub(userID, pokemon) {
     }
 }
 
-function listSubs(userID) {
-    if (userID) {
-        sql.all('SELECT * FROM subcription WHERE userId=?', [userID]).then((subs) => {
+/** 
+Returns a list of all subscriptions for the specified user.
+*/
+function listSubs(userID, guildId) {
+    if (userID && guildId) {
+        sql.all('SELECT * FROM subcription WHERE userId=? and guildId=?', [userID, guildId]).then((subs) => {
             pokemon = '';
             if (subs) {
                 for(i = 0; i < subs.length; i++) {
@@ -163,18 +213,24 @@ function listSubs(userID) {
     }
 }
 
+/** 
+Sleeps for the specified number of milliseconds.
+*/
 function sleep(time) {
     return new Promise((resolve) => setTimeout(resolve, time));
 }
 
-function notifySubs(pokemon, image) {
-    if (pokemon) {
-        sql.all('SELECT * FROM subcription WHERE pokemon=?', [pokemon.toUpperCase()]).then((subs) => {
+/** 
+Queries the database for all users subscribed to the specified pokemon and then sends them a DM to
+alert them of a spawn. The DM will include an image if one is provided.
+*/
+function notifySubs(pokemon, guildId, image) {
+    if (pokemon && guildId) {
+        sql.all('SELECT * FROM subcription WHERE guildId=? AND pokemon=?', [guildId, pokemon.toUpperCase()]).then((subs) => {
             if (subs) {
                 for (i = 0; i < subs.length; i++) {
                     userId = subs[i].userId;
                     pokemon = subs[i].pokemon;
-                    logger.debug(userId + ' is interested in ' + pokemon);
                     if (image) {
                         bot.sendMessage({ to: userId, message: pokemon + ' has spawned: ' + image });
                     }
@@ -193,9 +249,12 @@ function notifySubs(pokemon, image) {
     }
 }
 
+/** 
+Initializes and opens a connection to the Sqlite database. If necessary, it will also create the required table(s).
+*/
 function initializeDB() {
     sql.open(dbFile).then(() => {
-        sql.run('CREATE TABLE IF NOT EXISTS subcription (userId TEXT, pokemon TEXT)').then(() => {
+        sql.run('CREATE TABLE IF NOT EXISTS subcription (userId TEXT, guildId TEXT, pokemon TEXT)').then(() => {
             logger.info('Database Initialized');
         }).catch((err) => {
             logger.error('Unable to initialize database: ' + err);
